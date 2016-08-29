@@ -1,0 +1,21 @@
+Source: python-cassandra-driver3
+Maintainer: Tyler Hobbs <tyler@datastax.com>
+Section: python
+Priority: optional
+Build-Depends:
+  debhelper (>= 8),
+  python,
+  python-support,
+  python-setuptools,
+  python-concurrent.futures,
+  python-six,
+Standards-Version: 3.9.3
+
+Package: python-cassandra-driver3
+Architecture: any
+Depends:
+  ${misc:Depends},
+  ${python:Depends},
+  python-concurrent.futures,
+  python-six,
+Description: Python driver for Cassandra

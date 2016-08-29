@@ -18,6 +18,10 @@ tests/integration/ccm
 setuptools*.tar.gz
 setuptools*.egg
 
+debian/python-cassandra-driver/
+debian/python-cassandra-driver*
+debian/files
+
 cassandra/*.c
 !cassandra/cmurmur3.c
 cassandra/*.html
