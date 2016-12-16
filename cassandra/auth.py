@@ -1,4 +1,4 @@
-# Copyright 2013-2014 DataStax, Inc.
+# Copyright 2013-2016 DataStax, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -10,7 +10,10 @@
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
-
+try:
+    from puresasl.client import SASLClient
+except ImportError:
+    SASLClient = None
 
 class AuthProvider(object):
     """
@@ -58,6 +61,9 @@ class Authenticator(object):
 
     .. versionadded:: 2.0.0
     """
+
+    server_authenticator_class = None
+    """ Set during the connection AUTHENTICATE phase """
 
     def initial_response(self):
         """
@@ -123,3 +129,54 @@ class PlainTextAuthenticator(Authenticator):
 
     def evaluate_challenge(self, challenge):
         return None
+
+
+class SaslAuthProvider(AuthProvider):
+    """
+    An :class:`~.AuthProvider` supporting general SASL auth mechanisms
+
+    Suitable for GSSAPI or other SASL mechanisms
+
+    Example usage::
+
+        from cassandra.cluster import Cluster
+        from cassandra.auth import SaslAuthProvider
+
+        sasl_kwargs = {'service': 'something',
+                       'mechanism': 'GSSAPI',
+                       'qops': 'auth'.split(',')}
+        auth_provider = SaslAuthProvider(**sasl_kwargs)
+        cluster = Cluster(auth_provider=auth_provider)
+
+    .. versionadded:: 2.1.4
+    """
+
+    def __init__(self, **sasl_kwargs):
+        if SASLClient is None:
+            raise ImportError('The puresasl library has not been installed')
+        if 'host' in sasl_kwargs:
+            raise ValueError("kwargs should not contain 'host' since it is passed dynamically to new_authenticator")
+        self.sasl_kwargs = sasl_kwargs
+
+    def new_authenticator(self, host):
+        return SaslAuthenticator(host, **self.sasl_kwargs)
+
+
+class SaslAuthenticator(Authenticator):
+    """
+    A pass-through :class:`~.Authenticator` using the third party package
+    'pure-sasl' for authentication
+
+    .. versionadded:: 2.1.4
+    """
+
+    def __init__(self, host, service, mechanism='GSSAPI', **sasl_kwargs):
+        if SASLClient is None:
+            raise ImportError('The puresasl library has not been installed')
+        self.sasl = SASLClient(host, service, mechanism, **sasl_kwargs)
+
+    def initial_response(self):
+        return self.sasl.process()
+
+    def evaluate_challenge(self, challenge):
+        return self.sasl.process(challenge)

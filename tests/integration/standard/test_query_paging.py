@@ -1,4 +1,4 @@
-# Copyright 2013-2014 DataStax, Inc.
+# Copyright 2013-2016 DataStax, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ from itertools import cycle, count
 from six.moves import range
 from threading import Event
 
-from cassandra.cluster import Cluster, PagedResult
+from cassandra.cluster import Cluster
 from cassandra.concurrent import execute_concurrent, execute_concurrent_with_args
 from cassandra.policies import HostDistance
 from cassandra.query import SimpleStatement
@@ -50,6 +50,9 @@ class QueryPagingTests(unittest.TestCase):
         self.session = self.cluster.connect()
         self.session.execute("TRUNCATE test3rf.test")
 
+    def tearDown(self):
+        self.cluster.shutdown()
+
     def test_paging(self):
         statements_and_params = zip(cycle(["INSERT INTO test3rf.test (k, v) VALUES (%s, 0)"]),
                                     [(i, ) for i in range(100)])
@@ -65,6 +68,34 @@ class QueryPagingTests(unittest.TestCase):
             self.assertEqual(100, len(list(self.session.execute(statement))))
 
             self.assertEqual(100, len(list(self.session.execute(prepared))))
+
+    def test_paging_state(self):
+        """
+        Test to validate paging state api
+        @since 3.7.0
+        @jira_ticket PYTHON-200
+        @expected_result paging state should returned should be accurate, and allow for queries to be resumed.
+
+        @test_category queries
+        """
+        statements_and_params = zip(cycle(["INSERT INTO test3rf.test (k, v) VALUES (%s, 0)"]),
+                                    [(i, ) for i in range(100)])
+        execute_concurrent(self.session, list(statements_and_params))
+
+        list_all_results = []
+        self.session.default_fetch_size = 3
+
+        result_set = self.session.execute("SELECT * FROM test3rf.test")
+        while(result_set.has_more_pages):
+            for row in result_set.current_rows:
+                self.assertNotIn(row, list_all_results)
+            list_all_results.extend(result_set.current_rows)
+            page_state = result_set.paging_state
+            result_set = self.session.execute("SELECT * FROM test3rf.test", paging_state=page_state)
+
+        if(len(result_set.current_rows) > 0):
+            list_all_results.append(result_set.current_rows)
+        self.assertEqual(len(list_all_results), 100)
 
     def test_paging_verify_writes(self):
         statements_and_params = zip(cycle(["INSERT INTO test3rf.test (k, v) VALUES (%s, 0)"]),
@@ -251,7 +282,7 @@ class QueryPagingTests(unittest.TestCase):
 
             future.add_callbacks(callback=handle_page, callback_args=(future, counter), errback=handle_error)
             event.wait()
-            self.assertEquals(next(counter), 100)
+            self.assertEqual(next(counter), 100)
 
             # simple statement
             future = self.session.execute_async(SimpleStatement("SELECT * FROM test3rf.test"))
@@ -260,7 +291,7 @@ class QueryPagingTests(unittest.TestCase):
 
             future.add_callbacks(callback=handle_page, callback_args=(future, counter), errback=handle_error)
             event.wait()
-            self.assertEquals(next(counter), 100)
+            self.assertEqual(next(counter), 100)
 
             # prepared statement
             future = self.session.execute_async(prepared)
@@ -269,7 +300,7 @@ class QueryPagingTests(unittest.TestCase):
 
             future.add_callbacks(callback=handle_page, callback_args=(future, counter), errback=handle_error)
             event.wait()
-            self.assertEquals(next(counter), 100)
+            self.assertEqual(next(counter), 100)
 
     def test_concurrent_with_paging(self):
         statements_and_params = zip(cycle(["INSERT INTO test3rf.test (k, v) VALUES (%s, 0)"]),
@@ -281,10 +312,10 @@ class QueryPagingTests(unittest.TestCase):
         for fetch_size in (2, 3, 7, 10, 99, 100, 101, 10000):
             self.session.default_fetch_size = fetch_size
             results = execute_concurrent_with_args(self.session, prepared, [None] * 10)
-            self.assertEquals(10, len(results))
+            self.assertEqual(10, len(results))
             for (success, result) in results:
                 self.assertTrue(success)
-                self.assertEquals(100, len(list(result)))
+                self.assertEqual(100, len(list(result)))
 
     def test_fetch_size(self):
         """
@@ -298,66 +329,66 @@ class QueryPagingTests(unittest.TestCase):
 
         self.session.default_fetch_size = 10
         result = self.session.execute(prepared, [])
-        self.assertIsInstance(result, PagedResult)
+        self.assertTrue(result.has_more_pages)
 
         self.session.default_fetch_size = 2000
         result = self.session.execute(prepared, [])
-        self.assertIsInstance(result, list)
+        self.assertFalse(result.has_more_pages)
 
         self.session.default_fetch_size = None
         result = self.session.execute(prepared, [])
-        self.assertIsInstance(result, list)
+        self.assertFalse(result.has_more_pages)
 
         self.session.default_fetch_size = 10
 
         prepared.fetch_size = 2000
         result = self.session.execute(prepared, [])
-        self.assertIsInstance(result, list)
+        self.assertFalse(result.has_more_pages)
 
         prepared.fetch_size = None
         result = self.session.execute(prepared, [])
-        self.assertIsInstance(result, list)
+        self.assertFalse(result.has_more_pages)
 
         prepared.fetch_size = 10
         result = self.session.execute(prepared, [])
-        self.assertIsInstance(result, PagedResult)
+        self.assertTrue(result.has_more_pages)
 
         prepared.fetch_size = 2000
         bound = prepared.bind([])
         result = self.session.execute(bound, [])
-        self.assertIsInstance(result, list)
+        self.assertFalse(result.has_more_pages)
 
         prepared.fetch_size = None
         bound = prepared.bind([])
         result = self.session.execute(bound, [])
-        self.assertIsInstance(result, list)
+        self.assertFalse(result.has_more_pages)
 
         prepared.fetch_size = 10
         bound = prepared.bind([])
         result = self.session.execute(bound, [])
-        self.assertIsInstance(result, PagedResult)
+        self.assertTrue(result.has_more_pages)
 
         bound.fetch_size = 2000
         result = self.session.execute(bound, [])
-        self.assertIsInstance(result, list)
+        self.assertFalse(result.has_more_pages)
 
         bound.fetch_size = None
         result = self.session.execute(bound, [])
-        self.assertIsInstance(result, list)
+        self.assertFalse(result.has_more_pages)
 
         bound.fetch_size = 10
         result = self.session.execute(bound, [])
-        self.assertIsInstance(result, PagedResult)
+        self.assertTrue(result.has_more_pages)
 
         s = SimpleStatement("SELECT * FROM test3rf.test", fetch_size=None)
         result = self.session.execute(s, [])
-        self.assertIsInstance(result, list)
+        self.assertFalse(result.has_more_pages)
 
         s = SimpleStatement("SELECT * FROM test3rf.test")
         result = self.session.execute(s, [])
-        self.assertIsInstance(result, PagedResult)
+        self.assertTrue(result.has_more_pages)
 
         s = SimpleStatement("SELECT * FROM test3rf.test")
         s.fetch_size = None
         result = self.session.execute(s, [])
-        self.assertIsInstance(result, list)
+        self.assertFalse(result.has_more_pages)

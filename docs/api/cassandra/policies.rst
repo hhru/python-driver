@@ -24,6 +24,15 @@ Load Balancing
 .. autoclass:: TokenAwarePolicy
    :members:
 
+Translating Server Node Addresses
+---------------------------------
+
+.. autoclass:: AddressTranslator
+   :members:
+
+.. autoclass:: IdentityTranslator
+   :members:
+
 Marking Hosts Up or Down
 ------------------------
 
@@ -58,4 +67,13 @@ Retrying Failed Operations
    :members:
 
 .. autoclass:: DowngradingConsistencyRetryPolicy
+   :members:
+
+Retrying Idempotent Operations
+------------------------------
+
+.. autoclass:: SpeculativeExecutionPolicy
+   :members:
+
+.. autoclass:: ConstantSpeculativeExecutionPolicy
    :members:

@@ -1,4 +1,4 @@
-# Copyright 2013-2014 DataStax, Inc.
+# Copyright 2013-2016 DataStax, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -55,15 +55,12 @@ class CoordinatorStats():
                 expected, ip, self.coordinator_counts[ip], dict(self.coordinator_counts)))
 
 
-def create_schema(session, keyspace, simple_strategy=True,
+def create_schema(cluster, session, keyspace, simple_strategy=True,
                   replication_factor=1, replication_strategy=None):
     row_factory = session.row_factory
     session.row_factory = named_tuple_factory
 
-    results = session.execute(
-        'SELECT keyspace_name FROM system.schema_keyspaces')
-    existing_keyspaces = [row[0] for row in results]
-    if keyspace in existing_keyspaces:
+    if keyspace in cluster.metadata.keyspaces.keys():
         session.execute('DROP KEYSPACE %s' % keyspace, timeout=20)
 
     if simple_strategy:
@@ -126,34 +123,37 @@ def bootstrap(node, data_center=None, token=None):
 
 
 def ring(node):
-    print('From node%s:' % node)
     get_node(node).nodetool('ring')
 
 
-def wait_for_up(cluster, node, wait=True):
-    while True:
-        host = cluster.metadata.get_host(IP_FORMAT % node)
-        time.sleep(0.1)
+def wait_for_up(cluster, node):
+    tries = 0
+    addr = IP_FORMAT % node
+    while tries < 100:
+        host = cluster.metadata.get_host(addr)
         if host and host.is_up:
-            # BUG: shouldn't have to, but we do
-            if wait:
-                log.debug("Sleeping 30s until host is up")
-                time.sleep(30)
             log.debug("Done waiting for node %s to be up", node)
             return
+        else:
+            log.debug("Host is still marked down, waiting")
+            tries += 1
+            time.sleep(1)
+
+    # todo: don't mix string interpolation methods in the same package
+    raise RuntimeError("Host {0} is not up after {1} attempts".format(addr, tries))
 
 
-def wait_for_down(cluster, node, wait=True):
+def wait_for_down(cluster, node):
     log.debug("Waiting for node %s to be down", node)
-    while True:
+    tries = 0
+    while tries < 100:
         host = cluster.metadata.get_host(IP_FORMAT % node)
-        time.sleep(0.1)
         if not host or not host.is_up:
-            # BUG: shouldn't have to, but we do
-            if wait:
-                log.debug("Sleeping 10s until host is down")
-                time.sleep(10)
             log.debug("Done waiting for node %s to be down", node)
             return
         else:
             log.debug("Host is still marked up, waiting")
+            tries += 1
+            time.sleep(1)
+
+    raise RuntimeError("Host {0} is not down after {1} attempts".format(addr, tries))

@@ -1,4 +1,4 @@
-# Copyright 2013-2014 DataStax, Inc.
+# Copyright 2013-2016 DataStax, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -33,30 +33,41 @@ import calendar
 from collections import namedtuple
 from decimal import Decimal
 import io
+import logging
 import re
 import socket
 import time
-from datetime import datetime, timedelta
+import six
+from six.moves import range
+import sys
 from uuid import UUID
 import warnings
 
-import six
-from six.moves import range
 
-from cassandra.marshal import (int8_pack, int8_unpack, uint16_pack, uint16_unpack,
+from cassandra.marshal import (int8_pack, int8_unpack, int16_pack, int16_unpack,
+                               uint16_pack, uint16_unpack, uint32_pack, uint32_unpack,
                                int32_pack, int32_unpack, int64_pack, int64_unpack,
                                float_pack, float_unpack, double_pack, double_unpack,
                                varint_pack, varint_unpack)
-from cassandra.util import OrderedDict, sortedset
+from cassandra import util
 
 apache_cassandra_type_prefix = 'org.apache.cassandra.db.marshal.'
 
+cassandra_empty_type = 'org.apache.cassandra.db.marshal.EmptyType'
+cql_empty_type = 'empty'
+
+log = logging.getLogger(__name__)
 
 if six.PY3:
     _number_types = frozenset((int, float))
     long = int
+
+    def _name_from_hex_string(encoded_name):
+        bin_str = unhexlify(encoded_name)
+        return bin_str.decode('ascii')
 else:
     _number_types = frozenset((int, long, float))
+    _name_from_hex_string = unhexlify
 
 
 def trim_if_startswith(s, prefix):
@@ -65,11 +76,19 @@ def trim_if_startswith(s, prefix):
     return s
 
 
-def unix_time_from_uuid1(u):
-    return (u.time - 0x01B21DD213814000) / 10000000.0
-
-
 _casstypes = {}
+_cqltypes = {}
+
+
+cql_type_scanner = re.Scanner((
+    ('frozen', None),
+    (r'[a-zA-Z0-9_]+', lambda s, t: t),
+    (r'[\s,<>]', None),
+))
+
+
+def cql_types_from_string(cql_type):
+    return cql_type_scanner.scan(cql_type)[0]
 
 
 class CassandraTypeType(type):
@@ -88,6 +107,8 @@ class CassandraTypeType(type):
         cls = type.__new__(metacls, name, bases, dct)
         if not name.startswith('_'):
             _casstypes[name] = cls
+            if not cls.typename.startswith(apache_cassandra_type_prefix):
+                _cqltypes[cls.typename] = cls
         return cls
 
 
@@ -129,13 +150,13 @@ def parse_casstype_args(typestring):
         elif tok == ')':
             types, names = args.pop()
             prev_types, prev_names = args[-1]
-
             prev_types[-1] = prev_types[-1].apply_parameters(types, names)
         else:
             types, names = args[-1]
-            if ':' in tok:
-                name, tok = tok.rsplit(':', 1)
-                names.append(name)
+            parts = re.split(':|=>', tok)
+            tok = parts.pop()
+            if parts:
+                names.append(parts[0])
             else:
                 names.append(None)
 
@@ -164,6 +185,10 @@ def lookup_casstype(casstype):
         return parse_casstype_args(casstype)
     except (ValueError, AssertionError, IndexError) as e:
         raise ValueError("Don't know how to parse type string %r: %s" % (casstype, e))
+
+
+def is_reversed_casstype(data_type):
+    return issubclass(data_type, ReversedType)
 
 
 class EmptyValue(object):
@@ -195,20 +220,8 @@ class _CassandraType(object):
     of EmptyValue) will be returned.
     """
 
-    def __init__(self, val):
-        self.val = self.validate(val)
-
     def __repr__(self):
         return '<%s( %r )>' % (self.cql_parameterized_type(), self.val)
-
-    @staticmethod
-    def validate(val):
-        """
-        Called to transform an input value into one of a suitable type
-        for this class. As an example, the BooleanType class uses this
-        to convert an incoming value to True or False.
-        """
-        return val
 
     @classmethod
     def from_binary(cls, byts, protocol_version):
@@ -282,7 +295,7 @@ class _CassandraType(object):
         Given a set of other CassandraTypes, create a new subtype of this type
         using them as parameters. This is how composite types are constructed.
 
-            >>> MapType.apply_parameters(DateType, BooleanType)
+            >>> MapType.apply_parameters([DateType, BooleanType])
             <class 'cassandra.types.MapType(DateType, BooleanType)'>
 
         `subtypes` will be a sequence of CassandraTypes.  If provided, `names`
@@ -294,7 +307,7 @@ class _CassandraType(object):
         newname = cls.cass_parameterized_type_with(subtypes)
         if six.PY2 and isinstance(newname, unicode):
             newname = newname.encode('utf-8')
-        return type(newname, (cls,), {'subtypes': subtypes, 'cassname': cls.cassname})
+        return type(newname, (cls,), {'subtypes': subtypes, 'cassname': cls.cassname, 'fieldnames': names})
 
     @classmethod
     def cql_parameterized_type(cls):
@@ -341,20 +354,12 @@ class BytesType(_CassandraType):
     empty_binary_ok = True
 
     @staticmethod
-    def validate(val):
-        return bytearray(val)
-
-    @staticmethod
     def serialize(val, protocol_version):
         return six.binary_type(val)
 
 
 class DecimalType(_CassandraType):
     typename = 'decimal'
-
-    @staticmethod
-    def validate(val):
-        return Decimal(val)
 
     @staticmethod
     def deserialize(byts, protocol_version):
@@ -367,7 +372,10 @@ class DecimalType(_CassandraType):
         try:
             sign, digits, exponent = dec.as_tuple()
         except AttributeError:
-            raise TypeError("Non-Decimal type received for Decimal value")
+            try:
+                sign, digits, exponent = Decimal(dec).as_tuple()
+            except Exception:
+                raise TypeError("Invalid type for Decimal value: %r", dec)
         unscaled = int(''.join([str(digit) for digit in digits]))
         if sign:
             unscaled *= -1
@@ -395,16 +403,23 @@ class BooleanType(_CassandraType):
     typename = 'boolean'
 
     @staticmethod
-    def validate(val):
-        return bool(val)
-
-    @staticmethod
     def deserialize(byts, protocol_version):
         return bool(int8_unpack(byts))
 
     @staticmethod
     def serialize(truth, protocol_version):
         return int8_pack(truth)
+
+class ByteType(_CassandraType):
+    typename = 'tinyint'
+
+    @staticmethod
+    def deserialize(byts, protocol_version):
+        return int8_unpack(byts)
+
+    @staticmethod
+    def serialize(byts, protocol_version):
+        return int8_pack(byts)
 
 
 if six.PY2:
@@ -488,43 +503,32 @@ class IntegerType(_CassandraType):
         return varint_pack(byts)
 
 
-have_ipv6_packing = hasattr(socket, 'inet_ntop')
-
-
 class InetAddressType(_CassandraType):
     typename = 'inet'
-
-    # TODO: implement basic ipv6 support for Windows?
-    # inet_ntop and inet_pton aren't available on Windows
 
     @staticmethod
     def deserialize(byts, protocol_version):
         if len(byts) == 16:
-            if not have_ipv6_packing:
-                raise Exception(
-                    "IPv6 addresses cannot currently be handled on Windows")
-            return socket.inet_ntop(socket.AF_INET6, byts)
+            return util.inet_ntop(socket.AF_INET6, byts)
         else:
+            # util.inet_pton could also handle, but this is faster
+            # since we've already determined the AF
             return socket.inet_ntoa(byts)
 
     @staticmethod
     def serialize(addr, protocol_version):
         if ':' in addr:
-            fam = socket.AF_INET6
-            if not have_ipv6_packing:
-                raise Exception(
-                    "IPv6 addresses cannot currently be handled on Windows")
-            return socket.inet_pton(fam, addr)
+            return util.inet_pton(socket.AF_INET6, addr)
         else:
-            fam = socket.AF_INET
+            # util.inet_pton could also handle, but this is faster
+            # since we've already determined the AF
             return socket.inet_aton(addr)
 
 
 class CounterColumnType(LongType):
     typename = 'counter'
 
-
-cql_time_formats = (
+cql_timestamp_formats = (
     '%Y-%m-%d %H:%M',
     '%Y-%m-%d %H:%M:%S',
     '%Y-%m-%dT%H:%M',
@@ -538,69 +542,44 @@ _have_warned_about_timestamps = False
 class DateType(_CassandraType):
     typename = 'timestamp'
 
-    @classmethod
-    def validate(cls, date):
-        if isinstance(date, six.string_types):
-            date = cls.interpret_datestring(date)
-        return date
-
     @staticmethod
-    def interpret_datestring(date):
-        if date[-5] in ('+', '-'):
-            offset = (int(date[-4:-2]) * 3600 + int(date[-2:]) * 60) * int(date[-5] + '1')
-            date = date[:-5]
+    def interpret_datestring(val):
+        if val[-5] in ('+', '-'):
+            offset = (int(val[-4:-2]) * 3600 + int(val[-2:]) * 60) * int(val[-5] + '1')
+            val = val[:-5]
         else:
             offset = -time.timezone
-        for tformat in cql_time_formats:
+        for tformat in cql_timestamp_formats:
             try:
-                tval = time.strptime(date, tformat)
+                tval = time.strptime(val, tformat)
             except ValueError:
                 continue
-            return calendar.timegm(tval) + offset
+            # scale seconds to millis for the raw value
+            return (calendar.timegm(tval) + offset) * 1e3
         else:
-            raise ValueError("can't interpret %r as a date" % (date,))
-
-    def my_timestamp(self):
-        return self.val
+            raise ValueError("can't interpret %r as a date" % (val,))
 
     @staticmethod
     def deserialize(byts, protocol_version):
         timestamp = int64_unpack(byts) / 1000.0
-        if timestamp >= 0:
-            dt = datetime.utcfromtimestamp(timestamp)
-        else:
-            # PYTHON-119: workaround for Windows
-            dt = datetime(1970, 1, 1) + timedelta(seconds=timestamp)
-        return dt
+        return util.datetime_from_timestamp(timestamp)
 
     @staticmethod
     def serialize(v, protocol_version):
         try:
-            converted = calendar.timegm(v.utctimetuple())
-            converted = converted * 1e3 + getattr(v, 'microsecond', 0) / 1e3
+            # v is datetime
+            timestamp_seconds = calendar.timegm(v.utctimetuple())
+            timestamp = timestamp_seconds * 1e3 + getattr(v, 'microsecond', 0) / 1e3
         except AttributeError:
-            # Ints and floats are valid timestamps too
-            if type(v) not in _number_types:
-                raise TypeError('DateType arguments must be a datetime or timestamp')
+            try:
+                timestamp = calendar.timegm(v.timetuple()) * 1e3
+            except AttributeError:
+                # Ints and floats are valid timestamps too
+                if type(v) not in _number_types:
+                    raise TypeError('DateType arguments must be a datetime, date, or timestamp')
+                timestamp = v
 
-            global _have_warned_about_timestamps
-            if not _have_warned_about_timestamps:
-                _have_warned_about_timestamps = True
-                warnings.warn(
-                    "timestamp columns in Cassandra hold a number of "
-                    "milliseconds since the unix epoch.  Currently, when executing "
-                    "prepared statements, this driver multiplies timestamp "
-                    "values by 1000 so that the result of time.time() "
-                    "can be used directly.  However, the driver cannot "
-                    "match this behavior for non-prepared statements, "
-                    "so the 2.0 version of the driver will no longer multiply "
-                    "timestamps by 1000.  It is suggested that you simply use "
-                    "datetime.datetime objects for 'timestamp' values to avoid "
-                    "any ambiguity and to guarantee a smooth upgrade of the "
-                    "driver.")
-            converted = v * 1e3
-
-        return int64_pack(long(converted))
+        return int64_pack(long(timestamp))
 
 
 class TimestampType(DateType):
@@ -611,7 +590,7 @@ class TimeUUIDType(DateType):
     typename = 'timeuuid'
 
     def my_timestamp(self):
-        return unix_time_from_uuid1(self.val)
+        return util.unix_time_from_uuid1(self.val)
 
     @staticmethod
     def deserialize(byts, protocol_version):
@@ -623,6 +602,62 @@ class TimeUUIDType(DateType):
             return timeuuid.bytes
         except AttributeError:
             raise TypeError("Got a non-UUID object for a UUID value")
+
+
+class SimpleDateType(_CassandraType):
+    typename = 'date'
+    date_format = "%Y-%m-%d"
+
+    # Values of the 'date'` type are encoded as 32-bit unsigned integers
+    # representing a number of days with epoch (January 1st, 1970) at the center of the
+    # range (2^31).
+    EPOCH_OFFSET_DAYS = 2 ** 31
+
+    @staticmethod
+    def deserialize(byts, protocol_version):
+        days = uint32_unpack(byts) - SimpleDateType.EPOCH_OFFSET_DAYS
+        return util.Date(days)
+
+    @staticmethod
+    def serialize(val, protocol_version):
+        try:
+            days = val.days_from_epoch
+        except AttributeError:
+            if isinstance(val, six.integer_types):
+                # the DB wants offset int values, but util.Date init takes days from epoch
+                # here we assume int values are offset, as they would appear in CQL
+                # short circuit to avoid subtracting just to add offset
+                return uint32_pack(val)
+            days = util.Date(val).days_from_epoch
+        return uint32_pack(days + SimpleDateType.EPOCH_OFFSET_DAYS)
+
+
+class ShortType(_CassandraType):
+    typename = 'smallint'
+
+    @staticmethod
+    def deserialize(byts, protocol_version):
+        return int16_unpack(byts)
+
+    @staticmethod
+    def serialize(byts, protocol_version):
+        return int16_pack(byts)
+
+
+class TimeType(_CassandraType):
+    typename = 'time'
+
+    @staticmethod
+    def deserialize(byts, protocol_version):
+        return util.Time(int64_unpack(byts))
+
+    @staticmethod
+    def serialize(val, protocol_version):
+        try:
+            nano = val.nanosecond_time
+        except AttributeError:
+            nano = util.Time(val).nanosecond_time
+        return int64_pack(nano)
 
 
 class UTF8Type(_CassandraType):
@@ -647,10 +682,7 @@ class VarcharType(UTF8Type):
 
 
 class _ParameterizedType(_CassandraType):
-    def __init__(self, val):
-        if not self.subtypes:
-            raise ValueError("%s type with no parameters can't be instantiated" % (self.typename,))
-        _CassandraType.__init__(self, val)
+    num_subtypes = 'UNKNOWN'
 
     @classmethod
     def deserialize(cls, byts, protocol_version):
@@ -669,11 +701,6 @@ class _ParameterizedType(_CassandraType):
 
 class _SimpleParameterizedType(_ParameterizedType):
     @classmethod
-    def validate(cls, val):
-        subtype, = cls.subtypes
-        return cls.adapter([subtype.validate(subval) for subval in val])
-
-    @classmethod
     def deserialize_safe(cls, byts, protocol_version):
         subtype, = cls.subtypes
         if protocol_version >= 3:
@@ -685,12 +712,13 @@ class _SimpleParameterizedType(_ParameterizedType):
         numelements = unpack(byts[:length])
         p = length
         result = []
+        inner_proto = max(3, protocol_version)
         for _ in range(numelements):
             itemlen = unpack(byts[p:p + length])
             p += length
             item = byts[p:p + itemlen]
             p += itemlen
-            result.append(subtype.from_binary(item, protocol_version))
+            result.append(subtype.from_binary(item, inner_proto))
         return cls.adapter(result)
 
     @classmethod
@@ -702,8 +730,9 @@ class _SimpleParameterizedType(_ParameterizedType):
         pack = int32_pack if protocol_version >= 3 else uint16_pack
         buf = io.BytesIO()
         buf.write(pack(len(items)))
+        inner_proto = max(3, protocol_version)
         for item in items:
-            itembytes = subtype.to_binary(item, protocol_version)
+            itembytes = subtype.to_binary(item, inner_proto)
             buf.write(pack(len(itembytes)))
             buf.write(itembytes)
         return buf.getvalue()
@@ -718,7 +747,7 @@ class ListType(_SimpleParameterizedType):
 class SetType(_SimpleParameterizedType):
     typename = 'set'
     num_subtypes = 1
-    adapter = sortedset
+    adapter = util.sortedset
 
 
 class MapType(_ParameterizedType):
@@ -726,13 +755,8 @@ class MapType(_ParameterizedType):
     num_subtypes = 2
 
     @classmethod
-    def validate(cls, val):
-        subkeytype, subvaltype = cls.subtypes
-        return dict((subkeytype.validate(k), subvaltype.validate(v)) for (k, v) in six.iteritems(val))
-
-    @classmethod
     def deserialize_safe(cls, byts, protocol_version):
-        subkeytype, subvaltype = cls.subtypes
+        key_type, value_type = cls.subtypes
         if protocol_version >= 3:
             unpack = int32_unpack
             length = 4
@@ -741,7 +765,8 @@ class MapType(_ParameterizedType):
             length = 2
         numelements = unpack(byts[:length])
         p = length
-        themap = OrderedDict()
+        themap = util.OrderedMapSerializedKey(key_type, protocol_version)
+        inner_proto = max(3, protocol_version)
         for _ in range(numelements):
             key_len = unpack(byts[p:p + length])
             p += length
@@ -751,14 +776,14 @@ class MapType(_ParameterizedType):
             p += length
             valbytes = byts[p:p + val_len]
             p += val_len
-            key = subkeytype.from_binary(keybytes, protocol_version)
-            val = subvaltype.from_binary(valbytes, protocol_version)
-            themap[key] = val
+            key = key_type.from_binary(keybytes, inner_proto)
+            val = value_type.from_binary(valbytes, inner_proto)
+            themap._insert_unchecked(key, keybytes, val)
         return themap
 
     @classmethod
     def serialize_safe(cls, themap, protocol_version):
-        subkeytype, subvaltype = cls.subtypes
+        key_type, value_type = cls.subtypes
         pack = int32_pack if protocol_version >= 3 else uint16_pack
         buf = io.BytesIO()
         buf.write(pack(len(themap)))
@@ -766,9 +791,10 @@ class MapType(_ParameterizedType):
             items = six.iteritems(themap)
         except AttributeError:
             raise TypeError("Got a non-map object for a map value")
+        inner_proto = max(3, protocol_version)
         for key, val in items:
-            keybytes = subkeytype.to_binary(key, protocol_version)
-            valbytes = subvaltype.to_binary(val, protocol_version)
+            keybytes = key_type.to_binary(key, inner_proto)
+            valbytes = value_type.to_binary(val, inner_proto)
             buf.write(pack(len(keybytes)))
             buf.write(keybytes)
             buf.write(pack(len(valbytes)))
@@ -778,7 +804,6 @@ class MapType(_ParameterizedType):
 
 class TupleType(_ParameterizedType):
     typename = 'tuple'
-    num_subtypes = 'UNKNOWN'
 
     @classmethod
     def deserialize_safe(cls, byts, protocol_version):
@@ -829,40 +854,45 @@ class TupleType(_ParameterizedType):
 
 
 class UserType(TupleType):
-    typename = "'org.apache.cassandra.db.marshal.UserType'"
+    typename = "org.apache.cassandra.db.marshal.UserType"
 
     _cache = {}
+    _module = sys.modules[__name__]
 
     @classmethod
-    def make_udt_class(cls, keyspace, udt_name, names_and_types, mapped_class):
+    def make_udt_class(cls, keyspace, udt_name, field_names, field_types):
+        assert len(field_names) == len(field_types)
+
         if six.PY2 and isinstance(udt_name, unicode):
             udt_name = udt_name.encode('utf-8')
 
-        try:
-            return cls._cache[(keyspace, udt_name)]
-        except KeyError:
-            fieldnames, types = zip(*names_and_types)
-            instance = type(udt_name, (cls,), {'subtypes': types,
+        instance = cls._cache.get((keyspace, udt_name))
+        if not instance or instance.fieldnames != field_names or instance.subtypes != field_types:
+            instance = type(udt_name, (cls,), {'subtypes': field_types,
                                                'cassname': cls.cassname,
                                                'typename': udt_name,
-                                               'fieldnames': fieldnames,
+                                               'fieldnames': field_names,
                                                'keyspace': keyspace,
-                                               'mapped_class': mapped_class})
+                                               'mapped_class': None,
+                                               'tuple_type': cls._make_registered_udt_namedtuple(keyspace, udt_name, field_names)})
             cls._cache[(keyspace, udt_name)] = instance
-            return instance
+        return instance
+
+    @classmethod
+    def evict_udt_class(cls, keyspace, udt_name):
+        if six.PY2 and isinstance(udt_name, unicode):
+            udt_name = udt_name.encode('utf-8')
+        try:
+            del cls._cache[(keyspace, udt_name)]
+        except KeyError:
+            pass
 
     @classmethod
     def apply_parameters(cls, subtypes, names):
-        keyspace = subtypes[0]
-        udt_name = unhexlify(subtypes[1].cassname)
-        field_names = [unhexlify(encoded_name) for encoded_name in names[2:]]
-        assert len(field_names) == len(subtypes[2:])
-        return type(udt_name, (cls,), {'subtypes': subtypes[2:],
-                                       'cassname': cls.cassname,
-                                       'typename': udt_name,
-                                       'fieldnames': field_names,
-                                       'keyspace': keyspace,
-                                       'mapped_class': None})
+        keyspace = subtypes[0].cass_parameterized_type()  # when parsed from cassandra type, the keyspace is created as an unrecognized cass type; This gets the name back
+        udt_name = _name_from_hex_string(subtypes[1].cassname)
+        field_names = tuple(_name_from_hex_string(encoded_name) for encoded_name in names[2:])  # using tuple here to match what comes into make_udt_class from other sources (for caching equality test)
+        return cls.make_udt_class(keyspace, udt_name, field_names, tuple(subtypes[2:]))
 
     @classmethod
     def cql_parameterized_type(cls):
@@ -870,51 +900,64 @@ class UserType(TupleType):
 
     @classmethod
     def deserialize_safe(cls, byts, protocol_version):
-        proto_version = max(3, protocol_version)
-        p = 0
-        values = []
-        for col_type in cls.subtypes:
-            if p == len(byts):
-                break
-            itemlen = int32_unpack(byts[p:p + 4])
-            p += 4
-            if itemlen >= 0:
-                item = byts[p:p + itemlen]
-                p += itemlen
-            else:
-                item = None
-            # collections inside UDTs are always encoded with at least the
-            # version 3 format
-            values.append(col_type.from_binary(item, proto_version))
-
-        if len(values) < len(cls.subtypes):
-            nones = [None] * (len(cls.subtypes) - len(values))
-            values = values + nones
-
+        values = super(UserType, cls).deserialize_safe(byts, protocol_version)
         if cls.mapped_class:
             return cls.mapped_class(**dict(zip(cls.fieldnames, values)))
+        elif cls.tuple_type:
+            return cls.tuple_type(*values)
         else:
-            Result = namedtuple(cls.typename, cls.fieldnames)
-            return Result(*values)
+            return tuple(values)
 
     @classmethod
     def serialize_safe(cls, val, protocol_version):
         proto_version = max(3, protocol_version)
         buf = io.BytesIO()
-        for fieldname, subtype in zip(cls.fieldnames, cls.subtypes):
-            item = getattr(val, fieldname)
+        for i, (fieldname, subtype) in enumerate(zip(cls.fieldnames, cls.subtypes)):
+            # first treat as a tuple, else by custom type
+            try:
+                item = val[i]
+            except TypeError:
+                item = getattr(val, fieldname)
+
             if item is not None:
-                packed_item = subtype.to_binary(getattr(val, fieldname), proto_version)
+                packed_item = subtype.to_binary(item, proto_version)
                 buf.write(int32_pack(len(packed_item)))
                 buf.write(packed_item)
             else:
                 buf.write(int32_pack(-1))
         return buf.getvalue()
 
+    @classmethod
+    def _make_registered_udt_namedtuple(cls, keyspace, name, field_names):
+        # this is required to make the type resolvable via this module...
+        # required when unregistered udts are pickled for use as keys in
+        # util.OrderedMap
+        t = cls._make_udt_tuple_type(name, field_names)
+        if t:
+            qualified_name = "%s_%s" % (keyspace, name)
+            setattr(cls._module, qualified_name, t)
+        return t
+
+    @classmethod
+    def _make_udt_tuple_type(cls, name, field_names):
+        # fallback to positional named, then unnamed tuples
+        # for CQL identifiers that aren't valid in Python,
+        try:
+            t = namedtuple(name, field_names)
+        except ValueError:
+            try:
+                t = namedtuple(name, util._positional_rename_invalid_identifiers(field_names))
+                log.warn("could not create a namedtuple for '%s' because one or more field names are not valid Python identifiers (%s); " \
+                         "returning positionally-named fields" % (name, field_names))
+            except ValueError:
+                t = None
+                log.warn("could not create a namedtuple for '%s' because the name is not a valid Python identifier; " \
+                         "will return tuples in its place" % (name,))
+        return t
+
 
 class CompositeType(_ParameterizedType):
-    typename = "'org.apache.cassandra.db.marshal.CompositeType'"
-    num_subtypes = 'UNKNOWN'
+    typename = "org.apache.cassandra.db.marshal.CompositeType"
 
     @classmethod
     def cql_parameterized_type(cls):
@@ -924,9 +967,31 @@ class CompositeType(_ParameterizedType):
         typestring = cls.cass_parameterized_type(full=True)
         return "'%s'" % (typestring,)
 
+    @classmethod
+    def deserialize_safe(cls, byts, protocol_version):
+        result = []
+        for subtype in cls.subtypes:
+            if not byts:
+                # CompositeType can have missing elements at the end
+                break
 
-class DynamicCompositeType(CompositeType):
-    typename = "'org.apache.cassandra.db.marshal.DynamicCompositeType'"
+            element_length = uint16_unpack(byts[:2])
+            element = byts[2:2 + element_length]
+
+            # skip element length, element, and the EOC (one byte)
+            byts = byts[2 + element_length + 1:]
+            result.append(subtype.from_binary(element, protocol_version))
+
+        return tuple(result)
+
+
+class DynamicCompositeType(_ParameterizedType):
+    typename = "org.apache.cassandra.db.marshal.DynamicCompositeType"
+
+    @classmethod
+    def cql_parameterized_type(cls):
+        sublist = ', '.join('%s=>%s' % (alias, typ.cass_parameterized_type(full=True)) for alias, typ in zip(cls.fieldnames, cls.subtypes))
+        return "'%s(%s)'" % (cls.typename, sublist)
 
 
 class ColumnToCollectionType(_ParameterizedType):
@@ -935,12 +1000,26 @@ class ColumnToCollectionType(_ParameterizedType):
     Cassandra includes this. We don't actually need or want the extra
     information.
     """
-    typename = "'org.apache.cassandra.db.marshal.ColumnToCollectionType'"
-    num_subtypes = 'UNKNOWN'
+    typename = "org.apache.cassandra.db.marshal.ColumnToCollectionType"
 
 
 class ReversedType(_ParameterizedType):
-    typename = "'org.apache.cassandra.db.marshal.ReversedType'"
+    typename = "org.apache.cassandra.db.marshal.ReversedType"
+    num_subtypes = 1
+
+    @classmethod
+    def deserialize_safe(cls, byts, protocol_version):
+        subtype, = cls.subtypes
+        return subtype.from_binary(byts)
+
+    @classmethod
+    def serialize_safe(cls, val, protocol_version):
+        subtype, = cls.subtypes
+        return subtype.to_binary(val, protocol_version)
+
+
+class FrozenType(_ParameterizedType):
+    typename = "frozen"
     num_subtypes = 1
 
     @classmethod

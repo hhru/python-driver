@@ -4,11 +4,25 @@ DataStax Python Driver for Apache Cassandra
 .. image:: https://travis-ci.org/datastax/python-driver.png?branch=master
    :target: https://travis-ci.org/datastax/python-driver
 
-A Python client driver for Apache Cassandra.  This driver works exclusively
-with the Cassandra Query Language v3 (CQL3) and Cassandra's native
-protocol.  Cassandra versions 1.2 through 2.1 are supported.
+A modern, `feature-rich <https://github.com/datastax/python-driver#features>`_ and highly-tunable Python client library for Apache Cassandra (1.2+) and DataStax Enterprise (3.1+) using exclusively Cassandra's binary protocol and Cassandra Query Language v3.
 
 The driver supports Python 2.6, 2.7, 3.3, and 3.4.
+
+Feedback Requested
+------------------
+**Help us focus our efforts!** Provide your input on the `Platform and Runtime Survey <https://docs.google.com/a/datastax.com/forms/d/10wkbKLqmqs91gvhFW5u43y60pg_geZDolVNrxfO5_48/viewform>`_ (we kept it short).
+
+Features
+--------
+* `Synchronous <http://datastax.github.io/python-driver/api/cassandra/cluster.html#cassandra.cluster.Session.execute>`_ and `Asynchronous <http://datastax.github.io/python-driver/api/cassandra/cluster.html#cassandra.cluster.Session.execute_async>`_ APIs
+* `Simple, Prepared, and Batch statements <http://datastax.github.io/python-driver/api/cassandra/query.html#cassandra.query.Statement>`_
+* Asynchronous IO, parallel execution, request pipelining
+* `Connection pooling <http://datastax.github.io/python-driver/api/cassandra/cluster.html#cassandra.cluster.Cluster.get_core_connections_per_host>`_
+* Automatic node discovery
+* `Automatic reconnection <http://datastax.github.io/python-driver/api/cassandra/policies.html#reconnecting-to-dead-hosts>`_
+* Configurable `load balancing <http://datastax.github.io/python-driver/api/cassandra/policies.html#load-balancing>`_ and `retry policies <http://datastax.github.io/python-driver/api/cassandra/policies.html#retrying-failed-operations>`_
+* `Concurrent execution utilities <http://datastax.github.io/python-driver/api/cassandra/concurrent.html>`_
+* `Object mapper <http://datastax.github.io/python-driver/object_mapper.html>`_
 
 Installation
 ------------
@@ -32,8 +46,13 @@ A couple of links for getting up to speed:
 
 Object Mapper
 -------------
-The recommended object mapper for CQL is `cqlengine <https://github.com/cqlengine/cqlengine>`_,
-which utilizes this driver.
+cqlengine (originally developed by Blake Eggleston and Jon Haddad, with contributions from the
+community) is now maintained as an integral part of this package. Refer to
+`documentation here <http://datastax.github.io/python-driver/object_mapper.html>`_.
+
+Contributing
+------------
+See `CONTRIBUTING.md <https://github.com/datastax/python-driver/blob/master/CONTRIBUTING.rst>`_.
 
 Reporting Problems
 ------------------
@@ -51,15 +70,9 @@ and the IRC channel.
 For IRC, use the #datastax-drivers channel on irc.freenode.net.  If you don't have an IRC client,
 you can use `freenode's web-based client <http://webchat.freenode.net/?channels=#datastax-drivers>`_.
 
-Features to be Added
---------------------
-* C extension for encoding/decoding messages
-* Twisted support
-* IPv6 Support
-
 License
 -------
-Copyright 2013, 2014 DataStax
+Copyright 2013-2016 DataStax
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

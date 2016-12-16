@@ -1,4 +1,4 @@
-# Copyright 2013-2014 DataStax, Inc.
+# Copyright 2013-2016 DataStax, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,8 +22,7 @@ class NullHandler(logging.Handler):
 
 logging.getLogger('cassandra').addHandler(NullHandler())
 
-
-__version_info__ = (2, 1, 3)
+__version_info__ = (3, 7, 1)
 __version__ = '.'.join(map(str, __version_info__))
 
 
@@ -126,7 +125,90 @@ def consistency_value_to_name(value):
     return ConsistencyLevel.value_to_name[value] if value is not None else "Not Set"
 
 
-class Unavailable(Exception):
+class SchemaChangeType(object):
+    DROPPED = 'DROPPED'
+    CREATED = 'CREATED'
+    UPDATED = 'UPDATED'
+
+
+class SchemaTargetType(object):
+    KEYSPACE = 'KEYSPACE'
+    TABLE = 'TABLE'
+    TYPE = 'TYPE'
+    FUNCTION = 'FUNCTION'
+    AGGREGATE = 'AGGREGATE'
+
+
+class SignatureDescriptor(object):
+
+    def __init__(self, name, argument_types):
+        self.name = name
+        self.argument_types = argument_types
+
+    @property
+    def signature(self):
+        """
+        function signature string in the form 'name([type0[,type1[...]]])'
+
+        can be used to uniquely identify overloaded function names within a keyspace
+        """
+        return self.format_signature(self.name, self.argument_types)
+
+    @staticmethod
+    def format_signature(name, argument_types):
+        return "%s(%s)" % (name, ','.join(t for t in argument_types))
+
+    def __repr__(self):
+        return "%s(%s, %s)" % (self.__class__.__name__, self.name, self.argument_types)
+
+
+class UserFunctionDescriptor(SignatureDescriptor):
+    """
+    Describes a User function by name and argument signature
+    """
+
+    name = None
+    """
+    name of the function
+    """
+
+    argument_types = None
+    """
+    Ordered list of CQL argument type names comprising the type signature
+    """
+
+
+class UserAggregateDescriptor(SignatureDescriptor):
+    """
+    Describes a User aggregate function by name and argument signature
+    """
+
+    name = None
+    """
+    name of the aggregate
+    """
+
+    argument_types = None
+    """
+    Ordered list of CQL argument type names comprising the type signature
+    """
+
+
+class DriverException(Exception):
+    """
+    Base for all exceptions explicitly raised by the driver.
+    """
+    pass
+
+
+class RequestExecutionException(DriverException):
+    """
+    Base for request execution exceptions returned from the server.
+    """
+    pass
+
+
+class Unavailable(RequestExecutionException):
     """
     There were not enough live replicas to satisfy the requested consistency
     level, so the coordinator node immediately failed the request without
@@ -152,7 +234,7 @@ class Unavailable(Exception):
                                  'alive_replicas': alive_replicas}))
 
 
-class Timeout(Exception):
+class Timeout(RequestExecutionException):
     """
     Replicas failed to respond to the coordinator node before timing out.
     """
@@ -221,7 +303,136 @@ class WriteTimeout(Timeout):
         self.write_type = write_type
 
 
-class AlreadyExists(Exception):
+class CoordinationFailure(RequestExecutionException):
+    """
+    Replicas sent a failure to the coordinator.
+    """
+
+    consistency = None
+    """ The requested :class:`ConsistencyLevel` """
+
+    required_responses = None
+    """ The number of required replica responses """
+
+    received_responses = None
+    """
+    The number of replicas that responded before the coordinator timed out
+    the operation
+    """
+
+    failures = None
+    """
+    The number of replicas that sent a failure message
+    """
+
+    error_code_map = None
+    """
+    A map of inet addresses to error codes representing replicas that sent
+    a failure message.  Only set when `protocol_version` is 5 or higher.
+    """
+
+    def __init__(self, summary_message, consistency=None, required_responses=None,
+                 received_responses=None, failures=None, error_code_map=None):
+        self.consistency = consistency
+        self.required_responses = required_responses
+        self.received_responses = received_responses
+        self.failures = failures
+        self.error_code_map = error_code_map
+
+        info_dict = {
+            'consistency': consistency_value_to_name(consistency),
+            'required_responses': required_responses,
+            'received_responses': received_responses,
+            'failures': failures
+        }
+
+        if error_code_map is not None:
+            # make error codes look like "0x002a"
+            formatted_map = dict((addr, '0x%04x' % err_code)
+                                 for (addr, err_code) in error_code_map.items())
+            info_dict['error_code_map'] = formatted_map
+
+        Exception.__init__(self, summary_message + ' info=' + repr(info_dict))
+
+
+class ReadFailure(CoordinationFailure):
+    """
+    A subclass of :exc:`CoordinationFailure` for read operations.
+
+    This indicates that the replicas sent a failure message to the coordinator.
+    """
+
+    data_retrieved = None
+    """
+    A boolean indicating whether the requested data was retrieved
+    by the coordinator from any replicas before it timed out the
+    operation
+    """
+
+    def __init__(self, message, data_retrieved=None, **kwargs):
+        CoordinationFailure.__init__(self, message, **kwargs)
+        self.data_retrieved = data_retrieved
+
+
+class WriteFailure(CoordinationFailure):
+    """
+    A subclass of :exc:`CoordinationFailure` for write operations.
+
+    This indicates that the replicas sent a failure message to the coordinator.
+    """
+
+    write_type = None
+    """
+    The type of write operation, enum on :class:`~cassandra.policies.WriteType`
+    """
+
+    def __init__(self, message, write_type=None, **kwargs):
+        CoordinationFailure.__init__(self, message, **kwargs)
+        self.write_type = write_type
+
+
+class FunctionFailure(RequestExecutionException):
+    """
+    User Defined Function failed during execution
+    """
+
+    keyspace = None
+    """
+    Keyspace of the function
+    """
+
+    function = None
+    """
+    Name of the function
+    """
+
+    arg_types = None
+    """
+    List of argument type names of the function
+    """
+
+    def __init__(self, summary_message, keyspace, function, arg_types):
+        self.keyspace = keyspace
+        self.function = function
+        self.arg_types = arg_types
+        Exception.__init__(self, summary_message)
+
+
+class RequestValidationException(DriverException):
+    """
+    Server request validation failed
+    """
+    pass
+
+
+class ConfigurationException(RequestValidationException):
+    """
+    Server indicated request errro due to current configuration
+    """
+    pass
+
+
+class AlreadyExists(ConfigurationException):
     """
     An attempt was made to create a keyspace or table that already exists.
     """
@@ -249,7 +460,7 @@ class AlreadyExists(Exception):
         self.table = table
 
 
-class InvalidRequest(Exception):
+class InvalidRequest(RequestValidationException):
     """
     A query was made that was invalid for some reason, such as trying to set
     the keyspace for a connection to a nonexistent keyspace.
@@ -257,21 +468,21 @@ class InvalidRequest(Exception):
     pass
 
 
-class Unauthorized(Exception):
+class Unauthorized(RequestValidationException):
     """
-    The current user is not authorized to perfom the requested operation.
+    The current user is not authorized to perform the requested operation.
     """
     pass
 
 
-class AuthenticationFailed(Exception):
+class AuthenticationFailed(DriverException):
     """
     Failed to authenticate.
     """
     pass
 
 
-class OperationTimedOut(Exception):
+class OperationTimedOut(DriverException):
     """
     The operation took longer than the specified (client-side) timeout
     to complete.  This is not an error generated by Cassandra, only
@@ -295,7 +506,7 @@ class OperationTimedOut(Exception):
         Exception.__init__(self, message)
 
 
-class UnsupportedOperation(Exception):
+class UnsupportedOperation(DriverException):
     """
     An attempt was made to use a feature that is not supported by the
     selected protocol version.  See :attr:`Cluster.protocol_version`

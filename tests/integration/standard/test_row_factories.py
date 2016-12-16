@@ -1,4 +1,4 @@
-# Copyright 2013-2014 DataStax, Inc.
+# Copyright 2013-2016 DataStax, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from tests.integration import get_server_versions, use_singledc, PROTOCOL_VERSION
+from tests.integration import get_server_versions, use_singledc, PROTOCOL_VERSION, BasicSharedKeyspaceUnitTestCaseWFunctionTable, BasicSharedKeyspaceUnitTestCase, execute_until_pass
 
 try:
     import unittest2 as unittest
 except ImportError:
     import unittest # noqa
 
-from cassandra.cluster import Cluster
+from cassandra.cluster import Cluster, ResultSet
 from cassandra.query import tuple_factory, named_tuple_factory, dict_factory, ordered_dict_factory
 from cassandra.util import OrderedDict
 
@@ -28,45 +28,89 @@ def setup_module():
     use_singledc()
 
 
-class RowFactoryTests(unittest.TestCase):
+class NameTupleFactory(BasicSharedKeyspaceUnitTestCase):
+
+    def setUp(self):
+        super(NameTupleFactory, self).setUp()
+        self.session.row_factory = named_tuple_factory
+        ddl = '''
+                CREATE TABLE {0}.{1} (
+                    k int PRIMARY KEY,
+                    v1 text,
+                    v2 text,
+                    v3 text)'''.format(self.ks_name, self.function_table_name)
+        self.session.execute(ddl)
+        execute_until_pass(self.session, ddl)
+
+    def test_sanitizing(self):
+        """
+        Test to ensure that same named results are surfaced in the NamedTupleFactory
+
+        Creates a table with a few different text fields. Inserts a few values in that table.
+        It then fetches the values and confirms that despite all be being selected as the same name
+        they are propagated in the result set differently.
+
+        @since 3.3
+        @jira_ticket PYTHON-467
+        @expected_result duplicate named results have unique row names.
+
+        @test_category queries
+        """
+
+        for x in range(5):
+            insert1 = '''
+                INSERT INTO {0}.{1}
+                    ( k , v1, v2, v3 )
+                VALUES
+                    ( 1 , 'v1{2}', 'v2{2}','v3{2}' )
+          '''.format(self.keyspace_name, self.function_table_name, str(x))
+            self.session.execute(insert1)
+
+        query = "SELECT v1 AS duplicate, v2 AS duplicate, v3 AS duplicate from {0}.{1}".format(self.ks_name, self.function_table_name)
+        rs = self.session.execute(query)
+        row = rs[0]
+        self.assertTrue(hasattr(row, 'duplicate'))
+        self.assertTrue(hasattr(row, 'duplicate_'))
+        self.assertTrue(hasattr(row, 'duplicate__'))
+
+
+class RowFactoryTests(BasicSharedKeyspaceUnitTestCaseWFunctionTable):
     """
     Test different row_factories and access code
     """
+    def setUp(self):
+        super(RowFactoryTests, self).setUp()
+        self.insert1 = '''
+            INSERT INTO {0}.{1}
+                ( k , v )
+            VALUES
+                ( 1 , 1 )
+        '''.format(self.keyspace_name, self.function_table_name)
 
-    truncate = '''
-        TRUNCATE test3rf.test
-    '''
+        self.insert2 = '''
+            INSERT INTO {0}.{1}
+                ( k , v )
+            VALUES
+                ( 2 , 2 )
+        '''.format(self.keyspace_name, self.function_table_name)
 
-    insert1 = '''
-        INSERT INTO test3rf.test
-            ( k , v )
-        VALUES
-            ( 1 , 1 )
-    '''
+        self.select = '''
+            SELECT * FROM {0}.{1}
+        '''.format(self.keyspace_name, self.function_table_name)
 
-    insert2 = '''
-        INSERT INTO test3rf.test
-            ( k , v )
-        VALUES
-            ( 2 , 2 )
-    '''
-
-    select = '''
-        SELECT * FROM test3rf.test
-    '''
+    def tearDown(self):
+        self.drop_function_table()
 
     def test_tuple_factory(self):
-        cluster = Cluster(protocol_version=PROTOCOL_VERSION)
-        session = cluster.connect()
+        session = self.session
         session.row_factory = tuple_factory
 
-        session.execute(self.truncate)
         session.execute(self.insert1)
         session.execute(self.insert2)
 
         result = session.execute(self.select)
 
-        self.assertIsInstance(result, list)
+        self.assertIsInstance(result, ResultSet)
         self.assertIsInstance(result[0], tuple)
 
         for row in result:
@@ -77,18 +121,17 @@ class RowFactoryTests(unittest.TestCase):
         self.assertEqual(result[1][0], result[1][1])
         self.assertEqual(result[1][0], 2)
 
-    def test_named_tuple_factoryy(self):
-        cluster = Cluster(protocol_version=PROTOCOL_VERSION)
-        session = cluster.connect()
+    def test_named_tuple_factory(self):
+        session = self.session
         session.row_factory = named_tuple_factory
 
-        session.execute(self.truncate)
         session.execute(self.insert1)
         session.execute(self.insert2)
 
         result = session.execute(self.select)
 
-        self.assertIsInstance(result, list)
+        self.assertIsInstance(result, ResultSet)
+        result = list(result)
 
         for row in result:
             self.assertEqual(row.k, row.v)
@@ -99,17 +142,15 @@ class RowFactoryTests(unittest.TestCase):
         self.assertEqual(result[1].k, 2)
 
     def test_dict_factory(self):
-        cluster = Cluster(protocol_version=PROTOCOL_VERSION)
-        session = cluster.connect()
+        session = self.session
         session.row_factory = dict_factory
 
-        session.execute(self.truncate)
         session.execute(self.insert1)
         session.execute(self.insert2)
 
         result = session.execute(self.select)
 
-        self.assertIsInstance(result, list)
+        self.assertIsInstance(result, ResultSet)
         self.assertIsInstance(result[0], dict)
 
         for row in result:
@@ -121,17 +162,15 @@ class RowFactoryTests(unittest.TestCase):
         self.assertEqual(result[1]['k'], 2)
 
     def test_ordered_dict_factory(self):
-        cluster = Cluster(protocol_version=PROTOCOL_VERSION)
-        session = cluster.connect()
+        session = self.session
         session.row_factory = ordered_dict_factory
 
-        session.execute(self.truncate)
         session.execute(self.insert1)
         session.execute(self.insert2)
 
         result = session.execute(self.select)
 
-        self.assertIsInstance(result, list)
+        self.assertIsInstance(result, ResultSet)
         self.assertIsInstance(result[0], OrderedDict)
 
         for row in result:
@@ -151,7 +190,6 @@ class NamedTupleFactoryAndNumericColNamesTests(unittest.TestCase):
     def setup_class(cls):
         cls.cluster = Cluster(protocol_version=PROTOCOL_VERSION)
         cls.session = cls.cluster.connect()
-
         cls._cass_version, cls._cql_version = get_server_versions()
         ddl = '''
             CREATE TABLE test1rf.table_num_col ( key blob PRIMARY KEY, "626972746864617465" blob )
