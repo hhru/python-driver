@@ -13,6 +13,9 @@ Standards-Version: 3.9.3
 
 Package: python-cassandra-driver3
 Architecture: any
+Provides: python-cassandra-driver
+Conflicts: python-cassandra-driver
+Replaces: python-cassandra-driver
 Depends:
   ${misc:Depends},
   ${python:Depends},
