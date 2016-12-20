@@ -1,4 +1,4 @@
-# Copyright 2013-2014 DataStax, Inc.
+# Copyright 2013-2016 DataStax, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,19 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import struct
-import traceback
+import struct, time, traceback, sys, logging
 
-import cassandra
-from cassandra import ConsistencyLevel
+from cassandra import ConsistencyLevel, OperationTimedOut, ReadTimeout, WriteTimeout, Unavailable
 from cassandra.cluster import Cluster
-from cassandra.policies import TokenAwarePolicy, RoundRobinPolicy, \
-    DowngradingConsistencyRetryPolicy
+from cassandra.policies import TokenAwarePolicy, RoundRobinPolicy, DowngradingConsistencyRetryPolicy
 from cassandra.query import SimpleStatement
-from tests.integration import use_singledc, PROTOCOL_VERSION
+from tests.integration import use_singledc, PROTOCOL_VERSION, execute_until_pass
 
-from tests.integration.long.utils import force_stop, create_schema, \
-    wait_for_down, wait_for_up, start, CoordinatorStats
+from tests.integration.long.utils import (force_stop, create_schema, wait_for_down, wait_for_up,
+                                          start, CoordinatorStats)
 
 try:
     import unittest2 as unittest
@@ -41,6 +38,8 @@ MULTI_DC_CONSISTENCY_LEVELS = set([
     ConsistencyLevel.LOCAL_QUORUM, ConsistencyLevel.EACH_QUORUM])
 
 SINGLE_DC_CONSISTENCY_LEVELS = ALL_CONSISTENCY_LEVELS - MULTI_DC_CONSISTENCY_LEVELS
+
+log = logging.getLogger(__name__)
 
 
 def setup_module():
@@ -66,7 +65,7 @@ class ConsistencyTests(unittest.TestCase):
         for i in range(count):
             ss = SimpleStatement('INSERT INTO cf(k, i) VALUES (0, 0)',
                                  consistency_level=consistency_level)
-            session.execute(ss)
+            execute_until_pass(session, ss)
 
     def _query(self, session, keyspace, count, consistency_level=ConsistencyLevel.ONE):
         routing_key = struct.pack('>i', 0)
@@ -74,7 +73,19 @@ class ConsistencyTests(unittest.TestCase):
             ss = SimpleStatement('SELECT * FROM cf WHERE k = 0',
                                  consistency_level=consistency_level,
                                  routing_key=routing_key)
-            self.coordinator_stats.add_coordinator(session.execute_async(ss))
+            tries = 0
+            while True:
+                if tries > 100:
+                    raise RuntimeError("Failed to execute query after 100 attempts: {0}".format(ss))
+                try:
+                    self.coordinator_stats.add_coordinator(session.execute_async(ss))
+                    break
+                except (OperationTimedOut, ReadTimeout):
+                    ex_type, ex, tb = sys.exc_info()
+                    log.warn("{0}: {1} Backtrace: {2}".format(ex_type.__name__, ex, traceback.extract_tb(tb)))
+                    del tb
+                    tries += 1
+                    time.sleep(1)
 
     def _assert_writes_succeed(self, session, keyspace, consistency_levels):
         for cl in consistency_levels:
@@ -103,7 +114,7 @@ class ConsistencyTests(unittest.TestCase):
             try:
                 self._insert(session, keyspace, 1, cl)
                 self._cl_expected_failure(cl)
-            except (cassandra.Unavailable, cassandra.WriteTimeout):
+            except (Unavailable, WriteTimeout):
                 pass
 
     def _assert_reads_fail(self, session, keyspace, consistency_levels):
@@ -112,7 +123,7 @@ class ConsistencyTests(unittest.TestCase):
             try:
                 self._query(session, keyspace, 1, cl)
                 self._cl_expected_failure(cl)
-            except (cassandra.Unavailable, cassandra.ReadTimeout):
+            except (Unavailable, ReadTimeout):
                 pass
 
     def _test_tokenaware_one_node_down(self, keyspace, rf, accepted):
@@ -120,10 +131,10 @@ class ConsistencyTests(unittest.TestCase):
             load_balancing_policy=TokenAwarePolicy(RoundRobinPolicy()),
             protocol_version=PROTOCOL_VERSION)
         session = cluster.connect()
-        wait_for_up(cluster, 1, wait=False)
+        wait_for_up(cluster, 1)
         wait_for_up(cluster, 2)
 
-        create_schema(session, keyspace, replication_factor=rf)
+        create_schema(cluster, session, keyspace, replication_factor=rf)
         self._insert(session, keyspace, count=1)
         self._query(session, keyspace, count=1)
         self.coordinator_stats.assert_query_count_equals(self, 1, 0)
@@ -144,6 +155,8 @@ class ConsistencyTests(unittest.TestCase):
         finally:
             start(2)
             wait_for_up(cluster, 2)
+
+        cluster.shutdown()
 
     def test_rfone_tokenaware_one_node_down(self):
         self._test_tokenaware_one_node_down(
@@ -170,10 +183,10 @@ class ConsistencyTests(unittest.TestCase):
             load_balancing_policy=TokenAwarePolicy(RoundRobinPolicy()),
             protocol_version=PROTOCOL_VERSION)
         session = cluster.connect()
-        wait_for_up(cluster, 1, wait=False)
+        wait_for_up(cluster, 1)
         wait_for_up(cluster, 2)
 
-        create_schema(session, keyspace, replication_factor=3)
+        create_schema(cluster, session, keyspace, replication_factor=3)
         self._insert(session, keyspace, count=1)
         self._query(session, keyspace, count=1)
         self.coordinator_stats.assert_query_count_equals(self, 1, 0)
@@ -187,6 +200,8 @@ class ConsistencyTests(unittest.TestCase):
                                    SINGLE_DC_CONSISTENCY_LEVELS - set([ConsistencyLevel.ANY]),
                                    expected_reader=2)
 
+        cluster.shutdown()
+
     def _test_downgrading_cl(self, keyspace, rf, accepted):
         cluster = Cluster(
             load_balancing_policy=TokenAwarePolicy(RoundRobinPolicy()),
@@ -194,7 +209,7 @@ class ConsistencyTests(unittest.TestCase):
             protocol_version=PROTOCOL_VERSION)
         session = cluster.connect()
 
-        create_schema(session, keyspace, replication_factor=rf)
+        create_schema(cluster, session, keyspace, replication_factor=rf)
         self._insert(session, keyspace, 1)
         self._query(session, keyspace, 1)
         self.coordinator_stats.assert_query_count_equals(self, 1, 0)
@@ -215,6 +230,8 @@ class ConsistencyTests(unittest.TestCase):
         finally:
             start(2)
             wait_for_up(cluster, 2)
+
+        cluster.shutdown()
 
     def test_rfone_downgradingcl(self):
         self._test_downgrading_cl(
@@ -247,7 +264,7 @@ class ConsistencyTests(unittest.TestCase):
     def rfthree_downgradingcl(self, cluster, keyspace, roundrobin):
         session = cluster.connect()
 
-        create_schema(session, keyspace, replication_factor=2)
+        create_schema(cluster, session, keyspace, replication_factor=2)
         self._insert(session, keyspace, count=12)
         self._query(session, keyspace, count=12)
 
@@ -283,7 +300,52 @@ class ConsistencyTests(unittest.TestCase):
             start(2)
             wait_for_up(cluster, 2)
 
+        session.cluster.shutdown()
+
     # TODO: can't be done in this class since we reuse the ccm cluster
     #       instead we should create these elsewhere
     # def test_rfthree_downgradingcl_twodcs(self):
     # def test_rfthree_downgradingcl_twodcs_dcaware(self):
+
+
+class ConnectivityTest(unittest.TestCase):
+
+    def setUp(self):
+        self.coordinator_stats = CoordinatorStats()
+
+    def test_pool_with_host_down(self):
+        """
+        Test to ensure that cluster.connect() doesn't return prior to pools being initialized.
+
+        This test will figure out which host our pool logic will connect to first. It then shuts that server down.
+        Previouly the cluster.connect() would return prior to the pools being initialized, and the first queries would
+        return a no host exception
+
+        @since 3.7.0
+        @jira_ticket PYTHON-617
+        @expected_result query should complete successfully
+
+        @test_category connection
+        """
+
+        # find the first node, we will try create connections to, shut it down.
+        cluster = Cluster(protocol_version=PROTOCOL_VERSION)
+        cluster.connect()
+        hosts = cluster.metadata.all_hosts()
+        address = hosts[0].address
+        node_to_stop = int(address.split('.')[-1:][0])
+        try:
+            force_stop(node_to_stop)
+            wait_for_down(cluster, node_to_stop)
+            # Attempt a query against that node. It should complete
+            cluster2 = Cluster(protocol_version=PROTOCOL_VERSION)
+            session2 = cluster2.connect()
+            session2.execute("SELECT * FROM system.local")
+            cluster2.shutdown()
+        finally:
+            start(node_to_stop)
+            wait_for_up(cluster, node_to_stop)
+            cluster.shutdown()
+
+
+

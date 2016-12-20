@@ -1,0 +1,5 @@
+python-cassandra-driver3 (3.7.1+hh0) unstable; urgency=low
+
+  * debianize 3.7.1 version
+
+ -- Smirnov Danil <d.smirnov@hh.ru>  Mon, 29 Aug 2016 12:37:27 +0300

@@ -68,7 +68,7 @@ which sets the default keyspace for all queries made through that :class:`~.Sess
     session = cluster.connect('mykeyspace')
 
 
-You can always change a Sesssion's keyspace using :meth:`~.Session.set_keyspace` or
+You can always change a Session's keyspace using :meth:`~.Session.set_keyspace` or
 by executing a ``USE <keyspace>`` query:
 
 .. code-block:: python
@@ -179,7 +179,7 @@ Named place-holders use the ``%(name)s`` form:
         """
         INSERT INTO users (name, credits, user_id, username)
         VALUES (%(name)s, %(credits)s, %(user_id)s, %(name)s)
-        """
+        """,
         {'name': "John O'Reilly", 'credits': 42, 'user_id': uuid.uuid1()}
     )
 
@@ -212,6 +212,8 @@ following way:
     | | ``int``          | | ``int``               |
     | | ``long``         | | ``bigint``            |
     |                    | | ``varint``            |
+    |                    | | ``smallint``          |
+    |                    | | ``tinyint``           |
     |                    | | ``counter``           |
     +--------------------+-------------------------+
     | ``decimal.Decimal``| ``decimal``             |
@@ -223,8 +225,11 @@ following way:
     | | ``buffer``       | ``blob``                |
     | | ``bytearray``    |                         |
     +--------------------+-------------------------+
-    | | ``date``         | ``timestamp``           |
-    | | ``datetime``     |                         |
+    | ``date``           | ``date``                |
+    +--------------------+-------------------------+
+    | ``datetime``       | ``timestamp``           |
+    +--------------------+-------------------------+
+    | ``time``           | ``time``                |
     +--------------------+-------------------------+
     | | ``list``         | ``list``                |
     | | ``tuple``        |                         |
@@ -322,8 +327,9 @@ The consistency level used for a query determines how many of the
 replicas of the data you are interacting with need to respond for
 the query to be considered a success.
 
-By default, :attr:`.ConsistencyLevel.ONE` will be used for all queries. To
-specify a different consistency level, you will need to wrap your queries
+By default, :attr:`.ConsistencyLevel.LOCAL_ONE` will be used for all queries.
+You can specify a different default for the session on :attr:`.Session.default_consistency_level`.
+To specify a different consistency level per request, wrap queries
 in a :class:`~.SimpleStatement`:
 
 .. code-block:: python
@@ -385,12 +391,12 @@ prepared statement:
     user2 = session.execute(user_lookup_stmt, [user_id2])[0]
 
 The second option is to create a :class:`~.BoundStatement` from the
-:class:`~.PreparedStatement` and binding paramaters and set a consistency
+:class:`~.PreparedStatement` and binding parameters and set a consistency
 level on that:
 
 .. code-block:: python
 
     # override the QUORUM default
-    user3_lookup = user_lookup_stmt.bind([user_id3]
+    user3_lookup = user_lookup_stmt.bind([user_id3])
     user3_lookup.consistency_level = ConsistencyLevel.ALL
     user3 = session.execute(user3_lookup)

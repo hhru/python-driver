@@ -5,8 +5,9 @@ Releasing
 * Update the version in ``cassandra/__init__.py``
 
   * For beta releases, use a version like ``(2, 1, '0b1')``
-  * For release candidates, use a version like ``(2, 1, '0c1')``
-  * When in doubt, follow PEP 386 versioning
+  * For release candidates, use a version like ``(2, 1, '0rc1')``
+  * When in doubt, follow PEP 440 versioning
+* Add the new version in ``docs.yaml``
 
 * Commit the changelog and version changes
 * Tag the release.  For example: ``git tag -a 1.0.0 -m 'version 1.0.0'``
@@ -16,13 +17,19 @@ Releasing
     python setup.py register
     python setup.py sdist upload
 
+* On pypi, make the latest GA the only visible version
 * Update the docs (see below)
-* Append a 'post' string to the version tuple in ``cassandra/__init__.py``
-  so that it looks like ``(x, y, z, 'post')``
+* Append a 'postN' string to the version tuple in ``cassandra/__init__.py``
+  so that it looks like ``(x, y, z, 'postN')``
 
-  * After a beta or rc release, this should look like ``(2, 1, '0b1', 'post')``
+  * After a beta or rc release, this should look like ``(2, 1, '0b1', 'post0')``
 
 * Commit and push
+* Update 'cassandra-test' branch to reflect new release
+
+    * this is typically a matter of merging or rebasing onto master
+    * test and push updated branch to origin
+
 * Update the JIRA versions: https://datastax-oss.atlassian.net/plugins/servlet/project-config/PYTHON/versions
 * Make an announcement on the mailing list
 
@@ -126,3 +133,17 @@ To run the benchmarks, pick one of the files under the ``benchmarks/`` dir and r
 There are a few options.  Use ``--help`` to see them all::
 
     python benchmarks/future_batches.py --help
+
+Packaging for Cassandra
+=======================
+A source distribution is included in Cassandra, which uses the driver internally for ``cqlsh``.
+To package a released version, checkout the tag and build a source zip archive::
+
+    python setup.py sdist --formats=zip
+
+If packaging a pre-release (untagged) version, it is useful to include a commit hash in the archive
+name to specify the built version::
+
+    python setup.py egg_info -b-`git rev-parse --short HEAD` sdist --formats=zip
+
+The file (``dist/cassandra-driver-<version spec>.zip``) is packaged with Cassandra in ``cassandra/lib/cassandra-driver-internal-only*zip``.
