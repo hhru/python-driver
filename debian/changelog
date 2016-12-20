@@ -1,3 +1,9 @@
+python-cassandra-driver3 (3.7.1+hh4) unstable; urgency=low
+
+  * HH-65199 Add replaces
+
+ -- Automated Build <d.smirnov@hh.ru>  Tue, 20 Dec 2016 15:48:39 +0300
+
 python-cassandra-driver3 (3.7.1+hh2) unstable; urgency=low
 
   * PYTHON-613 extended test_queryset suite to run with non default
