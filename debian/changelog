@@ -1,3 +1,67 @@
+python-cassandra-driver3 (3.7.1+hh1) unstable; urgency=low
+
+  * PYTHON-613 extended test_queryset suite to run with non default
+    connection set
+  * PYTHON-493 adding test for non frozen UDTs
+  * Merge pull request #659 from datastax/218-test
+  * PYTHON-218 added test for speculative execution policies
+  * refer to NoSpecExecPlan in the right place after refactor
+  * Merge pull request #658 from datastax/628
+  * fix race adding connection pool to session while handling keyspace
+    change
+  * Merge pull request #657 from datastax/218
+  * fix unit test for new arguments
+  * fix docs, ResponseFuture.attempted_hosts
+  * speculative execution policies
+  * PYTHON-498, adding host state test
+  * fix removing last user type in proto [1,2]
+  * PYTHON-200 adding paging state test
+  * Merge pull request #654 from datastax/198
+  * PYTHON-106 adding test for UDTs and protocol v1/v2
+  * PYTHON-361 adding test
+  * address translator unit tests
+  * ec2 address translator
+  * PYTHON-606 Adding integation tests for udt default values
+  * Merge pull request #651 from datastax/106
+  * Merge pull request #652 from datastax/349
+  * Merge pull request #649 from datastax/606
+  * PYTHON-614 PYTHON-619 Adding tests. Enabling protocol v5 detection
+    and support to test harness.
+  * allow Cluster.refresh_nodes to force token rebuild
+  * refresh UDTs on keyspace update for v[12]
+  * Merge pull request #650 from datastax/361
+  * Merge pull request #648 from datastax/200
+  * Merge pull request #647 from datastax/498
+  * better error message when row decoding fails
+  * cqle: assign UDT default on init
+  * expose paging state in execution API
+  * PYTHON-284 tests, fixing timing on unit test issue
+  * don't mark a host down on event if we're still connected
+  * Merge pull request #646 from datastax/284
+  * Merge pull request #645 from datastax/621
+  * PYTHON-379 adding timing test for token replica map generation
+  * Add example request init listener
+  * basic request init listener
+  * add encoded message size to cluster.ResponseFuture
+  * make sure prepared result metadata is replaced on reprepare
+  * PYTHON-618 adding hash test
+  * Merge pull request #644 from datastax/379
+  * Merge pull request #643 from datastax/618
+  * PYTHON-617 adding long test to cover this specific scenario
+  * avoid quadratic token processing for RF > nodes
+  * Merge pull request #641 from thobbs/PYTHON-619-failure-map
+  * Merge pull request #642 from datastax/608
+  * Merge pull request #640 from datastax/614
+  * add hash function to cqlengine.columns.Column
+  * update test following beta protocol changes
+  * clear USE_BETA_FLAG in response message, avoid warnings
+  * only use partition key when deleting static columns
+  * Merge pull request #639 from datastax/617
+  * allow beta proto version flag
+  * Wait for first *successful* connect on initial
+
+ -- Automated Build <d.smirnov@hh.ru>  Tue, 20 Dec 2016 14:16:04 +0300
+
 python-cassandra-driver3 (3.7.1+hh0) unstable; urgency=low
 
   * debianize 3.7.1 version
