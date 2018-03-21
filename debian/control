@@ -3,13 +3,22 @@ Maintainer: Tyler Hobbs <tyler@datastax.com>
 Section: python
 Priority: optional
 Build-Depends:
-  debhelper (>= 8),
+  debhelper (>= 9),
+  libev4,
+  libev-dev,
+  cython,
+  cython3,
+  python-dev,
+  python3-dev,
   python,
   python-support,
   python-setuptools,
+  python3-setuptools,
   python-concurrent.futures,
   python-six,
 Standards-Version: 3.9.3
+X-Python-Version: >= 2.7
+X-Python3-Version: >= 3.4
 
 Package: python-cassandra-driver3
 Architecture: any
@@ -22,3 +31,13 @@ Depends:
   python-concurrent.futures,
   python-six,
 Description: Python driver for Cassandra
+
+Package: python3-cassandra-driver3
+Architecture: any
+Provides: python-cassandra-driver
+Breaks: python-cassandra-driver
+Replaces: python-cassandra-driver
+Depends:
+  ${misc:Depends},
+  ${python3:Depends},
+Description: Python driver for Cassandra for Python 3
