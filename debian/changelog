@@ -1,3 +1,9 @@
+python-cassandra-driver3 (3.7.1+hh6) unstable; urgency=medium
+
+  * HH-77519 python3 - debianization
+
+ -- Automated Build <a.pertsev@hh.ru>  Wed, 21 Mar 2018 18:46:48 +0300
+
 python-cassandra-driver3 (3.7.1+hh5) unstable; urgency=low
 
   * HH-65232 Fix debian
