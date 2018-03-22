@@ -1,3 +1,9 @@
+python-cassandra-driver3 (3.7.1+hh8) unstable; urgency=medium
+
+  * HH-77629 ubnutu16.04 dependencies fix
+
+ -- Automated Build <a.pertsev@hh.ru>  Thu, 22 Mar 2018 18:02:43 +0300
+
 python-cassandra-driver3 (3.7.1+hh7) unstable; urgency=medium
 
   * HH-77591 fix debian provides/breaks dependencies
