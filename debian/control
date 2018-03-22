@@ -16,6 +16,7 @@ Build-Depends:
   python3-setuptools,
   python-concurrent.futures,
   python-six,
+  python3-six,
 Standards-Version: 3.9.3
 X-Python-Version: >= 2.7
 X-Python3-Version: >= 3.4
@@ -33,5 +34,5 @@ Package: python3-cassandra-driver3
 Architecture: any
 Depends:
   ${misc:Depends},
-  ${python3:Depends},
+  python3 (>=3.4),
 Description: Python driver for Cassandra for Python 3
