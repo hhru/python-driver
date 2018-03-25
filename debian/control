@@ -23,6 +23,7 @@ X-Python3-Version: >= 3.4
 
 Package: python-cassandra-driver3
 Architecture: any
+Replaces: python-cassandra-driver
 Depends:
   ${misc:Depends},
   ${python:Depends},
